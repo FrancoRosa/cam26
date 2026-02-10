@@ -79,6 +79,40 @@ def to_numpy_array(x):
     return arr
 
 
+# add fullscreen resizing + stop button support
+try:
+    import tkinter as tk
+
+    def _get_screen_size_tk():
+        root = tk.Tk()
+        root.withdraw()
+        w = root.winfo_screenwidth()
+        h = root.winfo_screenheight()
+        root.destroy()
+        return w, h
+
+    SCREEN_W, SCREEN_H = _get_screen_size_tk()
+except Exception:
+    SCREEN_W, SCREEN_H = None, None
+
+stop_requested = False
+button_rect = None  # (x, y, w, h) in display coords
+
+
+def on_mouse(event, x, y, flags, param):
+    global stop_requested, button_rect
+    if event == cv2.EVENT_LBUTTONDOWN and button_rect is not None:
+        bx, by, bw, bh = button_rect
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            stop_requested = True
+
+
+window_name = "YOLO26 Detection"
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+cv2.setMouseCallback(window_name, on_mouse)
+
+# main loop (existing loop body remains, but replace the display step with resizing + button)
 while cap.isOpened():
     success, frame = cap.read()
     if not success:
@@ -163,11 +197,45 @@ while cap.isOpened():
             cv2.LINE_AA,
         )
 
-    window_name = "YOLO26 Detection"
-    # create a resizable window and set it to fullscreen so the image occupies whole screen
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    cv2.imshow(window_name, annotated_frame)
+    # --- new: resize to screen and draw stop button in bottom-left ---
+    if SCREEN_W is None or SCREEN_H is None:
+        # fallback to frame size if screen size not available
+        display_w, display_h = annotated_frame.shape[1], annotated_frame.shape[0]
+    else:
+        display_w, display_h = SCREEN_W, SCREEN_H
+
+    display_frame = cv2.resize(
+        annotated_frame, (display_w, display_h), interpolation=cv2.INTER_LINEAR
+    )
+
+    # button parameters (left-bottom)
+    bw, bh = 115, 50
+    bx, by = 20, display_h - bh - 20
+    button_rect = (bx, by, bw, bh)
+
+    # draw button (semi-opaque)
+    overlay = display_frame.copy()
+    cv2.rectangle(overlay, (bx, by), (bx + bw, by + bh), (0, 0, 255), -1)
+    alpha = 0.35
+    cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
+    # button border and text
+    cv2.rectangle(display_frame, (bx, by), (bx + bw, by + bh), (0, 0, 180), 2)
+    cv2.putText(
+        display_frame,
+        "Stop",
+        (bx + 20, by + bh - 15),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    cv2.imshow(window_name, display_frame)
+
+    # respond to button press
+    if stop_requested:
+        break
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
