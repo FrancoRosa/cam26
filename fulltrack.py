@@ -1,4 +1,3 @@
-# ...existing code...
 import time
 from collections import deque, defaultdict
 import argparse
@@ -13,9 +12,24 @@ MODEL_PATH = "yolo26n.pt"
 
 # CLI
 parser = argparse.ArgumentParser(description="Fullscreen YOLO26 tracker")
-parser.add_argument("--device-id", type=int, default=0, help="Camera device id (default: 0)")
-parser.add_argument("--video-input", type=str, default=None, help="Path to video file to use instead of camera")
+parser.add_argument(
+    "--device-id", type=int, default=0, help="Camera device id (default: 0)"
+)
+parser.add_argument(
+    "--video-input",
+    type=str,
+    default=None,
+    help="Path to video file to use instead of camera",
+)
+parser.add_argument(
+    "--frame-period",
+    type=int,
+    default=4,
+    help="Run inference every FRAME_PERIOD frames (default: 4)",
+)
 args = parser.parse_args()
+
+FRAME_PERIOD = max(1, int(args.frame_period))
 
 model = YOLO(MODEL_PATH)
 
@@ -32,6 +46,10 @@ if not cap.isOpened():
 
 # trails: key -> deque of (x, y, timestamp)
 trails = defaultdict(deque)
+
+# internal frame counter and cache for last annotated image
+_frame_idx = 0
+_last_annotated = None
 
 
 def color_from_key(key):
@@ -67,40 +85,48 @@ while cap.isOpened():
         break
 
     t = time.time()
-    results = model.track(frame, persist=True, device="cpu")
-    annotated_frame = results[0].plot()
+    # decide whether to run inference on this frame
+    process_now = (_frame_idx % FRAME_PERIOD) == 0 or (_last_annotated is None)
 
-    boxes = results[0].boxes
+    if process_now:
+        results = model.track(frame, persist=True, device="cpu")
+        annotated_frame = results[0].plot()
+        boxes = results[0].boxes
+        _last_annotated = annotated_frame.copy()
 
-    # Safely extract arrays
-    xyxys = to_numpy_array(getattr(boxes, "xyxy", None))
-    if xyxys is None:
-        xyxys = np.zeros((0, 4))
-    else:
-        # ensure shape is (N,4)
-        try:
-            xyxys = xyxys.reshape(-1, 4)
-        except Exception:
-            xyxys = np.atleast_2d(xyxys)
-
-    cls_arr = to_numpy_array(getattr(boxes, "cls", None))
-    id_arr = to_numpy_array(getattr(boxes, "id", None))
-
-    # Add current detections to their respective trails
-    for i, xy in enumerate(xyxys):
-        x1, y1, x2, y2 = xy
-        cx = float((x1 + x2) / 2.0)
-        cy = float((y1 + y2) / 2.0)
-
-        if id_arr is not None and i < id_arr.shape[0]:
-            key = f"id{int(id_arr[i])}"
-        elif cls_arr is not None and i < cls_arr.shape[0]:
-            # fallback: use class with frame-local index (not persistent across frames)
-            key = f"cls{int(cls_arr[i])}_f{i}"
+        # Safely extract arrays
+        xyxys = to_numpy_array(getattr(boxes, "xyxy", None))
+        if xyxys is None:
+            xyxys = np.zeros((0, 4))
         else:
-            key = f"det{i}"
+            # ensure shape is (N,4)
+            try:
+                xyxys = xyxys.reshape(-1, 4)
+            except Exception:
+                xyxys = np.atleast_2d(xyxys)
 
-        trails[key].append((cx, cy, t))
+        cls_arr = to_numpy_array(getattr(boxes, "cls", None))
+        id_arr = to_numpy_array(getattr(boxes, "id", None))
+
+        # Add current detections to their respective trails
+        for i, xy in enumerate(xyxys):
+            x1, y1, x2, y2 = xy
+            cx = float((x1 + x2) / 2.0)
+            cy = float((y1 + y2) / 2.0)
+
+            if id_arr is not None and i < id_arr.shape[0]:
+                key = f"id{int(id_arr[i])}"
+            elif cls_arr is not None and i < cls_arr.shape[0]:
+                # fallback: use class with frame-local index (not persistent across frames)
+                key = f"cls{int(cls_arr[i])}_f{i}"
+            else:
+                key = f"det{i}"
+
+            trails[key].append((cx, cy, t))
+    else:
+        # reuse last annotated frame to avoid running inference
+        annotated_frame = _last_annotated.copy()
+        # boxes is None on skipped frames; no new detections added
 
     # Prune old points and remove empty trails
     remove_keys = []
@@ -145,6 +171,8 @@ while cap.isOpened():
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
+
+    _frame_idx += 1
 
 cap.release()
 cv2.destroyAllWindows()
