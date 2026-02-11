@@ -247,6 +247,10 @@ while cap.isOpened():
     # decide whether to run inference on this frame
     process_now = (_frame_idx % FRAME_PERIOD) == 0 or (_last_annotated is None)
 
+    # get current UI mode and flip flag
+    current_mode = ui.get_selected_mode()
+    flip_top = ui.is_flip_enabled()
+
     if process_now:
         # Run model and get raw boxes (don't use results[0].plot() so we can selectively draw boxes)
         results = model.track(frame, persist=True, device="cpu")
@@ -265,64 +269,50 @@ while cap.isOpened():
         cls_arr = to_numpy_array(getattr(boxes, "cls", None))
         id_arr = to_numpy_array(getattr(boxes, "id", None))
 
-        # Start from original frame and draw only enabled-class boxes
-        annotated_frame = frame.copy()
+        # Prepare display canvas based on current_mode (0=Full,1=Top,2=Bottom,3=Side,4=Exit)
+        h, w = frame.shape[:2]
+        h_half = h // 2
+        top_half = frame[0:h_half, :].copy()
+        bottom_half = frame[h_half:h, :].copy()
+
+        if current_mode == 0:
+            display_canvas = frame.copy()
+        elif current_mode == 1:
+            # Top
+            if flip_top:
+                display_canvas = cv2.flip(top_half, 1)
+            else:
+                display_canvas = top_half.copy()
+        elif current_mode == 2:
+            # Bottom
+            if flip_top:
+                display_canvas = bottom_half.copy()
+            else:
+                display_canvas = cv2.flip(bottom_half, 1)
+        elif current_mode == 3:
+            # Side: concat top and bottom side by side (apply mirror as above)
+            t = cv2.flip(top_half, 1) if flip_top else top_half.copy()
+            b = cv2.flip(bottom_half, 1) if flip_top else bottom_half.copy()
+            display_canvas = np.concatenate((t, b), axis=1)
+        elif current_mode == 4:
+            break
+
+        annotated_frame = display_canvas.copy()
 
         try:
             enabled_names = set(ui.get_enabled_class_names())
         except Exception:
             enabled_names = set()
 
-        for i, xy in enumerate(xyxys):
-            x1, y1, x2, y2 = map(int, xy)
-            cls_id = None
-            cls_name = None
-            if cls_arr is not None and i < cls_arr.shape[0]:
-                try:
-                    cls_id = int(cls_arr[i])
-                except Exception:
-                    cls_id = None
-                if isinstance(names_map, dict) and cls_id is not None:
-                    cls_name = names_map.get(cls_id)
+        # Combine drawing and trail appending with coordinate mapping depending on mode
+        h, w = frame.shape[:2]
+        h_half = h // 2
 
-            # if UI has toggles and this class is not enabled, skip drawing this box
-            if enabled_names:
-                if cls_name is None or cls_name not in enabled_names:
-                    continue
-
-            # draw the box and label using a deterministic color per class/name
-            col_key = (
-                cls_name
-                if cls_name is not None
-                else (cls_id if cls_id is not None else i)
-            )
-            color = color_from_key(col_key)
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-            label = (
-                cls_name
-                if cls_name is not None
-                else (str(cls_id) if cls_id is not None else "obj")
-            )
-            cv2.putText(
-                annotated_frame,
-                label,
-                (x1, max(10, y1 - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2,
-                cv2.LINE_AA,
-            )
-
-        _last_annotated = annotated_frame.copy()
-
-        # Add current detections to their respective trails (same filtering applies below)
         for i, xy in enumerate(xyxys):
             x1, y1, x2, y2 = xy
-            cx = float((x1 + x2) / 2.0)
-            cy = float((y1 + y2) / 2.0)
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
 
-            # determine class id/name for this detection (if available)
             cls_id = None
             cls_name = None
             if cls_arr is not None and i < cls_arr.shape[0]:
@@ -332,16 +322,6 @@ while cap.isOpened():
                     cls_id = None
                 if isinstance(names_map, dict) and cls_id is not None:
                     cls_name = names_map.get(cls_id)
-
-            # build the trail key (prefer persistent track id if available)
-            if id_arr is not None and i < id_arr.shape[0]:
-                key = f"id{int(id_arr[i])}"
-            elif cls_name is not None:
-                key = f"{cls_name}_f{i}"
-            elif cls_arr is not None and i < cls_arr.shape[0]:
-                key = f"cls{int(cls_arr[i])}_f{i}"
-            else:
-                key = f"det{i}"
 
             # Filtering: respect CLI --classes (by id) and UI class toggles (by name)
             allowed_by_cli = (_allowed_class_ids is None) or (
@@ -351,8 +331,109 @@ while cap.isOpened():
             if enabled_names:
                 allowed_by_ui = cls_name is not None and cls_name in enabled_names
 
-            if allowed_by_cli and allowed_by_ui:
-                trails[key].append((cx, cy, t))
+            if not (allowed_by_cli and allowed_by_ui):
+                continue
+
+            # Determine if detection is in top or bottom half
+            is_top = (cy < h_half)
+
+            # Map coordinates into display_canvas depending on mode and flip flag
+            mx1 = mx2 = my1 = my2 = None
+            if current_mode == 0:
+                # Full: coordinates unchanged
+                mx1, my1, mx2, my2 = x1, y1, x2, y2
+            elif current_mode == 1:
+                # Top: only keep top-half detections
+                if not is_top:
+                    continue
+                if flip_top:
+                    # top was flipped horizontally
+                    mx1 = w - x2
+                    mx2 = w - x1
+                else:
+                    mx1, mx2 = x1, x2
+                my1, my2 = y1, y2
+            elif current_mode == 2:
+                # Bottom: only keep bottom-half detections, shift y
+                if is_top:
+                    continue
+                # bottom flip is opposite of flip_top
+                flip_bottom = not flip_top
+                if flip_bottom:
+                    mx1 = w - x2
+                    mx2 = w - x1
+                else:
+                    mx1, mx2 = x1, x2
+                my1 = y1 - h_half
+                my2 = y2 - h_half
+            elif current_mode == 3:
+                # Side: left=top, right=bottom
+                if is_top:
+                    # map to left half
+                    if flip_top:
+                        mx1 = w - x2
+                        mx2 = w - x1
+                    else:
+                        mx1, mx2 = x1, x2
+                    my1, my2 = y1, y2
+                    # left half has no x offset
+                else:
+                    # bottom -> right half; map y and x
+                    flip_bottom = not flip_top
+                    if flip_bottom:
+                        mx1 = w - x2
+                        mx2 = w - x1
+                    else:
+                        mx1, mx2 = x1, x2
+                    my1 = y1 - h_half
+                    my2 = y2 - h_half
+                    # shift to right half by adding w
+                    mx1 += w
+                    mx2 += w
+            else:
+                # Exit or unknown
+                continue
+
+            # Round and clamp
+            try:
+                ix1, iy1, ix2, iy2 = int(round(mx1)), int(round(my1)), int(round(mx2)), int(round(my2))
+            except Exception:
+                continue
+            ih, iw = annotated_frame.shape[:2]
+            ix1 = max(0, min(ix1, iw - 1))
+            ix2 = max(0, min(ix2, iw - 1))
+            iy1 = max(0, min(iy1, ih - 1))
+            iy2 = max(0, min(iy2, ih - 1))
+
+            # draw box and label
+            col_key = cls_name if cls_name is not None else (cls_id if cls_id is not None else i)
+            color = color_from_key(col_key)
+            cv2.rectangle(annotated_frame, (ix1, iy1), (ix2, iy2), color, 2)
+            label = cls_name if cls_name is not None else (str(cls_id) if cls_id is not None else "obj")
+            cv2.putText(
+                annotated_frame,
+                label,
+                (ix1, max(10, iy1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+
+            # Append trail point in display coordinates
+            mcx = (ix1 + ix2) / 2.0
+            mcy = (iy1 + iy2) / 2.0
+            if id_arr is not None and i < id_arr.shape[0]:
+                key = f"id{int(id_arr[i])}"
+            elif cls_name is not None:
+                key = f"{cls_name}_f{i}"
+            elif cls_arr is not None and i < cls_arr.shape[0]:
+                key = f"cls{int(cls_arr[i])}_f{i}"
+            else:
+                key = f"det{i}"
+
+            trails[key].append((mcx, mcy, t))
     else:
         # reuse last annotated frame to avoid running inference
         annotated_frame = _last_annotated.copy()

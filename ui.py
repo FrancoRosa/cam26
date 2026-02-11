@@ -13,6 +13,7 @@ SCREEN_W = None
 SCREEN_H = None
 CLASS_NAMES = []
 CLASS_TOGGLES = {}
+flip_top_half = False
 
 
 def _get_screen_size_tk():
@@ -109,7 +110,7 @@ def init_ui(
 
 def _on_mouse(event, x, y, flags, param):
     """Mouse callback for cv2 window; updates selected_mode / exit flag and class toggles."""
-    global selected_mode, exit_requested, button_rects, CLASS_TOGGLES, CLASS_NAMES
+    global selected_mode, exit_requested, button_rects, CLASS_TOGGLES, CLASS_NAMES, flip_top_half
     if event != cv2.EVENT_LBUTTONDOWN:
         return
     # check buttons
@@ -126,6 +127,15 @@ def _on_mouse(event, x, y, flags, param):
         if 10 < x < 30 and y_pos < y < y_pos + 20:
             CLASS_TOGGLES[name] = not CLASS_TOGGLES.get(name, True)
             return
+    # check mirror button (top-right). We'll compute its rect in draw_ui and store as mirror_rect
+    try:
+        if 'mirror_rect' in globals() and globals()['mirror_rect'] is not None:
+            bx, by, bw, bh = globals()['mirror_rect']
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                flip_top_half = not flip_top_half
+                return
+    except Exception:
+        pass
 
 
 def draw_ui(
@@ -134,7 +144,7 @@ def draw_ui(
     """Resize annotated_frame to fullscreen (if available) and draw left-bottom stacked buttons.
     Returns the display_frame ready for imshow.
     """
-    global button_rects, CLASS_NAMES, CLASS_TOGGLES
+    global button_rects, CLASS_NAMES, CLASS_TOGGLES, flip_top_half
     H, W = annotated_frame.shape[:2]
     if SCREEN_W is None or SCREEN_H is None:
         display_w, display_h = W, H
@@ -203,6 +213,20 @@ def draw_ui(
             cv2.LINE_AA,
         )
 
+    # draw Mirror button at top-right
+    m_bw, m_bh = 120, 40
+    m_bx = display_w - m_bw - margin
+    m_by = margin
+    globals()['mirror_rect'] = (m_bx, m_by, m_bw, m_bh)
+    m_color = (0, 255, 0) if flip_top_half else (80, 80, 160)
+    cv2.rectangle(display_frame, (m_bx, m_by), (m_bx + m_bw, m_by + m_bh), m_color, -1)
+    cv2.rectangle(display_frame, (m_bx, m_by), (m_bx + m_bw, m_by + m_bh), (255, 255, 255), 2)
+    label = "Mirror"
+    text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+    tx = m_bx + (m_bw - text_size[0]) // 2
+    ty = m_by + (m_bh + text_size[1]) // 2
+    cv2.putText(display_frame, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
     return display_frame
 
 
@@ -216,3 +240,7 @@ def get_selected_mode():
 
 def get_enabled_class_names():
     return [name for name, enabled in CLASS_TOGGLES.items() if enabled]
+
+
+def is_flip_enabled():
+    return flip_top_half
