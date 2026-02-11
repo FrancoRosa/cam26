@@ -387,5 +387,33 @@ while cap.isOpened():
 
     _frame_idx += 1
 
-cap.release()
-cv2.destroyAllWindows()
+
+def cleanup():
+    """Release camera/device and model gracefully and destroy windows."""
+    try:
+        if "cap" in globals() and cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # try model close/release if available
+    try:
+        if "model" in globals() and model is not None:
+            for fn in ("close", "release"):
+                f = getattr(model, fn, None)
+                if callable(f):
+                    try:
+                        f()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
+
+
+cleanup()
