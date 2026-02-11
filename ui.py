@@ -47,14 +47,48 @@ def init_ui(
     window_name = win_name
     SCREEN_W, SCREEN_H = _get_screen_size_tk()
 
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    # Create a resizable window first (most compatible)
     try:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    except Exception:
+        cv2.namedWindow(window_name)
+
+    # Some platforms (Ubuntu/Wayland) require a short imshow+waitKey cycle to apply window properties.
+    # Try several strategies to force fullscreen so behavior is more consistent across distros.
+    try:
+        # First attempt: set fullscreen property directly
         cv2.setWindowProperty(
             window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
         )
+        # enforce by showing a tiny blank frame
+        tmp = np.zeros((8, 8, 3), dtype=np.uint8)
+        try:
+            cv2.imshow(window_name, tmp)
+            cv2.waitKey(1)
+        except Exception:
+            pass
+    except Exception:
+        # fallback: try namedWindow with FULLSCREEN flag then set property
+        try:
+            cv2.namedWindow(window_name, cv2.WINDOW_FULLSCREEN)
+            cv2.setWindowProperty(
+                window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
+            )
+            tmp = np.zeros((8, 8, 3), dtype=np.uint8)
+            try:
+                cv2.imshow(window_name, tmp)
+                cv2.waitKey(1)
+            except Exception:
+                pass
+        except Exception:
+            # if all fails, continue without raising
+            pass
+
+    # set mouse callback after window creation
+    try:
+        cv2.setMouseCallback(window_name, _on_mouse)
     except Exception:
         pass
-    cv2.setMouseCallback(window_name, _on_mouse)
 
     # setup class toggles
     if class_names is None:
