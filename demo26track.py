@@ -12,7 +12,7 @@ model = YOLO(MODEL_PATH)
 cap = cv2.VideoCapture(0)
 
 # create fullscreen window (works on X11; small imshow+waitKey helps on Ubuntu/Wayland)
-window_name = "YOLO26 Webcam Detection"
+window_name = "360 tracker"
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 try:
