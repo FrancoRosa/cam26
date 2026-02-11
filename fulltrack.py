@@ -5,6 +5,7 @@ import sys
 import numpy as np
 import cv2
 from ultralytics import YOLO
+import ui
 
 # Configuration
 TRACK_TIME = 5.0  # seconds to keep drawing the trail
@@ -27,11 +28,49 @@ parser.add_argument(
     default=4,
     help="Run inference every FRAME_PERIOD frames (default: 4)",
 )
+parser.add_argument(
+    "--classes",
+    "-c",
+    type=str,
+    default="",
+    help="Comma-separated class names to follow (e.g. person,car). Empty = all classes",
+)
 args = parser.parse_args()
 
 FRAME_PERIOD = max(1, int(args.frame_period))
 
 model = YOLO(MODEL_PATH)
+
+# Determine allowed class IDs from provided names (if any)
+_allowed_class_ids = None
+if args.classes:
+    names_map = None
+    try:
+        # ultralytics YOLO provides model.names or names
+        names_map = getattr(model, 'names', None) or getattr(model, 'model', None) and getattr(model.model, 'names', None)
+    except Exception:
+        names_map = None
+    if isinstance(names_map, dict):
+        # names_map: id->name
+        provided = [s.strip() for s in args.classes.split(',') if s.strip()]
+        allowed = set()
+        unknown = []
+        lower_map = {v.lower(): k for k, v in names_map.items()}
+        for pn in provided:
+            pid = lower_map.get(pn.lower())
+            if pid is None:
+                unknown.append(pn)
+            else:
+                allowed.add(pid)
+        if unknown:
+            print(f"Warning: unknown class names: {unknown}")
+        if allowed:
+            _allowed_class_ids = allowed
+            print(f"Following classes (ids): {_allowed_class_ids}")
+        else:
+            print("No valid class names provided; following all classes.")
+    else:
+        print("Could not resolve model class names; --classes ignored.")
 
 # Select video source: prefer --video-input if provided, otherwise use device id
 if args.video_input:
@@ -79,38 +118,24 @@ def to_numpy_array(x):
     return arr
 
 
-# add fullscreen resizing + stop button support
-try:
-    import tkinter as tk
-
-    def _get_screen_size_tk():
-        root = tk.Tk()
-        root.withdraw()
-        w = root.winfo_screenwidth()
-        h = root.winfo_screenheight()
-        root.destroy()
-        return w, h
-
-    SCREEN_W, SCREEN_H = _get_screen_size_tk()
-except Exception:
-    SCREEN_W, SCREEN_H = None, None
-
-stop_requested = False
-button_rect = None  # (x, y, w, h) in display coords
-
-
-def on_mouse(event, x, y, flags, param):
-    global stop_requested, button_rect
-    if event == cv2.EVENT_LBUTTONDOWN and button_rect is not None:
-        bx, by, bw, bh = button_rect
-        if bx <= x <= bx + bw and by <= y <= by + bh:
-            stop_requested = True
-
-
 window_name = "YOLO26 Detection"
-cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-cv2.setMouseCallback(window_name, on_mouse)
+# Resolve model class names for UI toggles
+names_map = None
+try:
+    names_map = getattr(model, 'names', None) or (getattr(model, 'model', None) and getattr(model.model, 'names', None))
+except Exception:
+    names_map = None
+
+class_names_list = []
+initial_enabled = None
+if isinstance(names_map, dict):
+    # create ordered list by id
+    class_names_list = [names_map[i] for i in sorted(names_map.keys())]
+    if _allowed_class_ids is not None:
+        initial_enabled = [names_map[i] for i in sorted(names_map.keys()) if i in _allowed_class_ids]
+
+# initialize UI (creates window, fullscreen and mouse callback) with class toggles
+ui.init_ui(window_name, button_w=115, button_h=50, margin=20, spacing=8, class_names=class_names_list, initial_enabled=initial_enabled)
 
 # main loop (existing loop body remains, but replace the display step with resizing + button)
 while cap.isOpened():
@@ -148,15 +173,42 @@ while cap.isOpened():
             cx = float((x1 + x2) / 2.0)
             cy = float((y1 + y2) / 2.0)
 
+            # determine class id/name for this detection (if available)
+            cls_id = None
+            cls_name = None
+            if cls_arr is not None and i < cls_arr.shape[0]:
+                try:
+                    cls_id = int(cls_arr[i])
+                except Exception:
+                    cls_id = None
+                if isinstance(names_map, dict) and cls_id is not None:
+                    cls_name = names_map.get(cls_id)
+
+            # build the trail key (prefer persistent track id if available)
             if id_arr is not None and i < id_arr.shape[0]:
                 key = f"id{int(id_arr[i])}"
+            elif cls_name is not None:
+                # use class name with frame index so different detections of same class are separate
+                key = f"{cls_name}_f{i}"
             elif cls_arr is not None and i < cls_arr.shape[0]:
-                # fallback: use class with frame-local index (not persistent across frames)
                 key = f"cls{int(cls_arr[i])}_f{i}"
             else:
                 key = f"det{i}"
 
-            trails[key].append((cx, cy, t))
+            # Filtering: respect CLI --classes (by id) and UI class toggles (by name)
+            allowed_by_cli = (_allowed_class_ids is None) or (cls_id is not None and cls_id in _allowed_class_ids)
+            # UI toggles: if UI has class names, only follow those enabled; otherwise allow all
+            allowed_by_ui = True
+            try:
+                enabled_names = set(ui.get_enabled_class_names())
+            except Exception:
+                enabled_names = set()
+            if enabled_names:
+                # if we have a class name for this detection, require it to be enabled
+                allowed_by_ui = (cls_name is not None and cls_name in enabled_names)
+
+            if allowed_by_cli and allowed_by_ui:
+                trails[key].append((cx, cy, t))
     else:
         # reuse last annotated frame to avoid running inference
         annotated_frame = _last_annotated.copy()
@@ -197,44 +249,27 @@ while cap.isOpened():
             cv2.LINE_AA,
         )
 
-    # --- new: resize to screen and draw stop button in bottom-left ---
-    if SCREEN_W is None or SCREEN_H is None:
-        # fallback to frame size if screen size not available
-        display_w, display_h = annotated_frame.shape[1], annotated_frame.shape[0]
-    else:
-        display_w, display_h = SCREEN_W, SCREEN_H
+    # Display selected classes on the top-left of the screen
+    if _allowed_class_ids is not None:
+        class_labels = [f"{int(cid)}" for cid in _allowed_class_ids]
+        cv2.putText(
+            annotated_frame,
+            "Classes: " + ", ".join(class_labels),
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
-    display_frame = cv2.resize(
-        annotated_frame, (display_w, display_h), interpolation=cv2.INTER_LINEAR
-    )
-
-    # button parameters (left-bottom)
-    bw, bh = 115, 50
-    bx, by = 20, display_h - bh - 20
-    button_rect = (bx, by, bw, bh)
-
-    # draw button (semi-opaque)
-    overlay = display_frame.copy()
-    cv2.rectangle(overlay, (bx, by), (bx + bw, by + bh), (0, 0, 255), -1)
-    alpha = 0.35
-    cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
-    # button border and text
-    cv2.rectangle(display_frame, (bx, by), (bx + bw, by + bh), (0, 0, 180), 2)
-    cv2.putText(
-        display_frame,
-        "Stop",
-        (bx + 20, by + bh - 15),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
+    # use UI module to render fullscreen with buttons
+    display_frame = ui.draw_ui(annotated_frame, button_w=115, button_h=50, margin=20, spacing=8)
 
     cv2.imshow(window_name, display_frame)
 
-    # respond to button press
-    if stop_requested:
+    # respond to UI Exit button
+    if ui.is_exit_requested():
         break
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
