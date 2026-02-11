@@ -57,8 +57,27 @@ while cap.isOpened():
     if not success:
         break
 
+    # --- Split top/bottom and mirror bottom (like direct3.py) ---
+    try:
+        h, w = frame.shape[:2]
+        if h >= 2:
+            h_half = h // 2
+            top = frame[0:h_half, :, :]
+            bottom = frame[h_half:h, :, :]
+            # mirror bottom horizontally
+            bottom_mirror = cv2.flip(bottom, 1)
+            # compose processed frame (top + mirrored bottom)
+            processed_frame = np.vstack([top, bottom_mirror])
+        else:
+            processed_frame = frame
+    except Exception:
+        # fallback to original if any issue
+        processed_frame = frame
+
     t = time.time()
-    results = model.track(frame, persist=True, device="cpu")
+
+    # Run inference on the processed (mirrored bottom) frame
+    results = model.track(processed_frame, persist=True, device="cpu")
     annotated_frame = results[0].plot()
 
     boxes = results[0].boxes
@@ -77,7 +96,7 @@ while cap.isOpened():
     cls_arr = to_numpy_array(getattr(boxes, "cls", None))
     id_arr = to_numpy_array(getattr(boxes, "id", None))
 
-    # Add current detections to their respective trails
+    # Add current detections to their respective trails (coordinates already match processed_frame)
     for i, xy in enumerate(xyxys):
         x1, y1, x2, y2 = xy
         cx = float((x1 + x2) / 2.0)
@@ -86,7 +105,6 @@ while cap.isOpened():
         if id_arr is not None and i < id_arr.shape[0]:
             key = f"id{int(id_arr[i])}"
         elif cls_arr is not None and i < cls_arr.shape[0]:
-            # fallback: use class with frame-local index (not persistent across frames)
             key = f"cls{int(cls_arr[i])}_f{i}"
         else:
             key = f"det{i}"
@@ -103,7 +121,7 @@ while cap.isOpened():
     for k in remove_keys:
         del trails[k]
 
-    # Draw all trails
+    # Draw all trails on the annotated_frame
     for key, dq in trails.items():
         if len(dq) < 2:
             continue
@@ -115,7 +133,6 @@ while cap.isOpened():
             pos = (int(x), int(y))
             radius = 2 if i < len(dq) - 1 else 4
             cv2.circle(annotated_frame, pos, radius, color, -1)
-        # draw label near newest point
         nx, ny, _ = dq[-1]
         cv2.putText(
             annotated_frame,
