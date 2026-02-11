@@ -47,12 +47,16 @@ if args.classes:
     names_map = None
     try:
         # ultralytics YOLO provides model.names or names
-        names_map = getattr(model, 'names', None) or getattr(model, 'model', None) and getattr(model.model, 'names', None)
+        names_map = (
+            getattr(model, "names", None)
+            or getattr(model, "model", None)
+            and getattr(model.model, "names", None)
+        )
     except Exception:
         names_map = None
     if isinstance(names_map, dict):
         # names_map: id->name
-        provided = [s.strip() for s in args.classes.split(',') if s.strip()]
+        provided = [s.strip() for s in args.classes.split(",") if s.strip()]
         allowed = set()
         unknown = []
         lower_map = {v.lower(): k for k, v in names_map.items()}
@@ -119,23 +123,48 @@ def to_numpy_array(x):
 
 
 window_name = "YOLO26 Detection"
+# Define which class names to show as toggles (keep short like direct3)
+TARGET_CLASS_NAMES = ["person", "car", "motorbike", "bus", "truck", "phone", "wallet"]
 # Resolve model class names for UI toggles
 names_map = None
 try:
-    names_map = getattr(model, 'names', None) or (getattr(model, 'model', None) and getattr(model.model, 'names', None))
+    names_map = getattr(model, "names", None) or (
+        getattr(model, "model", None) and getattr(model.model, "names", None)
+    )
 except Exception:
     names_map = None
 
-class_names_list = []
+class_names_list = ["person", "car", "motorbike", "bus", "truck", "phone", "wallet"]
 initial_enabled = None
 if isinstance(names_map, dict):
-    # create ordered list by id
-    class_names_list = [names_map[i] for i in sorted(names_map.keys())]
+    # map id->name exists
+    name_values = {v for k, v in names_map.items()}
+    # keep only the small set defined in TARGET_CLASS_NAMES and present in the model
+    class_names_list = [n for n in TARGET_CLASS_NAMES if n in name_values]
+    if not class_names_list:
+        # fallback to all model names if none of the TARGET_CLASS_NAMES are present
+        class_names_list = [names_map[i] for i in sorted(names_map.keys())]
+
+    # prepare name->id map for initial_enabled resolution
+    name_to_id = {v: k for k, v in names_map.items()}
     if _allowed_class_ids is not None:
-        initial_enabled = [names_map[i] for i in sorted(names_map.keys()) if i in _allowed_class_ids]
+        # enable only those within the CLI-provided allowed ids
+        initial_enabled = [
+            n for n in class_names_list if name_to_id.get(n) in _allowed_class_ids
+        ]
+    else:
+        initial_enabled = list(class_names_list)
 
 # initialize UI (creates window, fullscreen and mouse callback) with class toggles
-ui.init_ui(window_name, button_w=115, button_h=50, margin=20, spacing=8, class_names=class_names_list, initial_enabled=initial_enabled)
+ui.init_ui(
+    window_name,
+    button_w=115,
+    button_h=50,
+    margin=20,
+    spacing=8,
+    class_names=class_names_list,
+    initial_enabled=initial_enabled,
+)
 
 # main loop (existing loop body remains, but replace the display step with resizing + button)
 while cap.isOpened():
@@ -148,17 +177,15 @@ while cap.isOpened():
     process_now = (_frame_idx % FRAME_PERIOD) == 0 or (_last_annotated is None)
 
     if process_now:
+        # Run model and get raw boxes (don't use results[0].plot() so we can selectively draw boxes)
         results = model.track(frame, persist=True, device="cpu")
-        annotated_frame = results[0].plot()
         boxes = results[0].boxes
-        _last_annotated = annotated_frame.copy()
 
         # Safely extract arrays
         xyxys = to_numpy_array(getattr(boxes, "xyxy", None))
         if xyxys is None:
             xyxys = np.zeros((0, 4))
         else:
-            # ensure shape is (N,4)
             try:
                 xyxys = xyxys.reshape(-1, 4)
             except Exception:
@@ -167,7 +194,58 @@ while cap.isOpened():
         cls_arr = to_numpy_array(getattr(boxes, "cls", None))
         id_arr = to_numpy_array(getattr(boxes, "id", None))
 
-        # Add current detections to their respective trails
+        # Start from original frame and draw only enabled-class boxes
+        annotated_frame = frame.copy()
+
+        try:
+            enabled_names = set(ui.get_enabled_class_names())
+        except Exception:
+            enabled_names = set()
+
+        for i, xy in enumerate(xyxys):
+            x1, y1, x2, y2 = map(int, xy)
+            cls_id = None
+            cls_name = None
+            if cls_arr is not None and i < cls_arr.shape[0]:
+                try:
+                    cls_id = int(cls_arr[i])
+                except Exception:
+                    cls_id = None
+                if isinstance(names_map, dict) and cls_id is not None:
+                    cls_name = names_map.get(cls_id)
+
+            # if UI has toggles and this class is not enabled, skip drawing this box
+            if enabled_names:
+                if cls_name is None or cls_name not in enabled_names:
+                    continue
+
+            # draw the box and label using a deterministic color per class/name
+            col_key = (
+                cls_name
+                if cls_name is not None
+                else (cls_id if cls_id is not None else i)
+            )
+            color = color_from_key(col_key)
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+            label = (
+                cls_name
+                if cls_name is not None
+                else (str(cls_id) if cls_id is not None else "obj")
+            )
+            cv2.putText(
+                annotated_frame,
+                label,
+                (x1, max(10, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+
+        _last_annotated = annotated_frame.copy()
+
+        # Add current detections to their respective trails (same filtering applies below)
         for i, xy in enumerate(xyxys):
             x1, y1, x2, y2 = xy
             cx = float((x1 + x2) / 2.0)
@@ -188,7 +266,6 @@ while cap.isOpened():
             if id_arr is not None and i < id_arr.shape[0]:
                 key = f"id{int(id_arr[i])}"
             elif cls_name is not None:
-                # use class name with frame index so different detections of same class are separate
                 key = f"{cls_name}_f{i}"
             elif cls_arr is not None and i < cls_arr.shape[0]:
                 key = f"cls{int(cls_arr[i])}_f{i}"
@@ -196,16 +273,12 @@ while cap.isOpened():
                 key = f"det{i}"
 
             # Filtering: respect CLI --classes (by id) and UI class toggles (by name)
-            allowed_by_cli = (_allowed_class_ids is None) or (cls_id is not None and cls_id in _allowed_class_ids)
-            # UI toggles: if UI has class names, only follow those enabled; otherwise allow all
+            allowed_by_cli = (_allowed_class_ids is None) or (
+                cls_id is not None and cls_id in _allowed_class_ids
+            )
             allowed_by_ui = True
-            try:
-                enabled_names = set(ui.get_enabled_class_names())
-            except Exception:
-                enabled_names = set()
             if enabled_names:
-                # if we have a class name for this detection, require it to be enabled
-                allowed_by_ui = (cls_name is not None and cls_name in enabled_names)
+                allowed_by_ui = cls_name is not None and cls_name in enabled_names
 
             if allowed_by_cli and allowed_by_ui:
                 trails[key].append((cx, cy, t))
@@ -264,7 +337,9 @@ while cap.isOpened():
         )
 
     # use UI module to render fullscreen with buttons
-    display_frame = ui.draw_ui(annotated_frame, button_w=115, button_h=50, margin=20, spacing=8)
+    display_frame = ui.draw_ui(
+        annotated_frame, button_w=115, button_h=50, margin=20, spacing=8
+    )
 
     cv2.imshow(window_name, display_frame)
 

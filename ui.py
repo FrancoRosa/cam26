@@ -49,7 +49,9 @@ def init_ui(
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     try:
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.setWindowProperty(
+            window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
+        )
     except Exception:
         pass
     cv2.setMouseCallback(window_name, _on_mouse)
