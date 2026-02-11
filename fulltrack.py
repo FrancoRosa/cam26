@@ -6,6 +6,8 @@ import numpy as np
 import cv2
 from ultralytics import YOLO
 import ui
+import os
+import glob
 
 # Configuration
 TRACK_TIME = 5.0  # seconds to keep drawing the trail
@@ -102,11 +104,45 @@ if args.classes:
     else:
         print("Could not resolve model class names; --classes ignored.")
 
+
+def find_preferred_camera(preferred_keywords):
+    """Return the /dev/videoX path for the first device whose sysfs name
+    contains any of the preferred_keywords (case-insensitive), or None.
+    """
+    for dev in sorted(glob.glob("/dev/video*")):
+        try:
+            base = os.path.basename(dev)  # e.g. video0
+            sysf = f"/sys/class/video4linux/{base}/name"
+            if os.path.exists(sysf):
+                with open(sysf, "r", encoding="utf-8", errors="ignore") as f:
+                    name = f.read().strip()
+                if not name:
+                    continue
+                lname = name.lower()
+                for kw in preferred_keywords:
+                    if kw.lower() in lname:
+                        return dev
+        except Exception:
+            continue
+    return None
+
+
 # Select video source: prefer --video-input if provided, otherwise use device id
 if args.video_input:
     source = args.video_input
 else:
-    source = int(args.device_id)
+    # if user asked for device 0, try to pick the Insta360 camera if present
+    if int(args.device_id) == 0:
+        preferred = find_preferred_camera(
+            ["insta360", "insta", "insta x4", "insta x3", "insta x"]
+        )
+        if preferred:
+            source = preferred
+            print(f"Using preferred camera device: {source}")
+        else:
+            source = int(args.device_id)
+    else:
+        source = int(args.device_id)
 
 cap = cv2.VideoCapture(source)
 if not cap.isOpened():
