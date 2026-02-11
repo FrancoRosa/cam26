@@ -1,4 +1,3 @@
-# ...existing code...
 import time
 from collections import deque, defaultdict
 import numpy as np
@@ -11,6 +10,16 @@ MODEL_PATH = "yolo26n.pt"
 
 model = YOLO(MODEL_PATH)
 cap = cv2.VideoCapture(0)
+
+# create fullscreen window (works on X11; small imshow+waitKey helps on Ubuntu/Wayland)
+window_name = "YOLO26 Webcam Detection"
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+try:
+    cv2.imshow(window_name, np.zeros((2, 2, 3), dtype=np.uint8))
+    cv2.waitKey(1)
+except Exception:
+    pass
 
 # trails: key -> deque of (x, y, timestamp)
 trails = defaultdict(deque)
@@ -119,7 +128,7 @@ while cap.isOpened():
             cv2.LINE_AA,
         )
 
-    cv2.imshow("YOLO26 Webcam Detection", annotated_frame)
+    cv2.imshow(window_name, annotated_frame)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break

@@ -129,8 +129,8 @@ def _on_mouse(event, x, y, flags, param):
             return
     # check mirror button (top-right). We'll compute its rect in draw_ui and store as mirror_rect
     try:
-        if 'mirror_rect' in globals() and globals()['mirror_rect'] is not None:
-            bx, by, bw, bh = globals()['mirror_rect']
+        if "mirror_rect" in globals() and globals()["mirror_rect"] is not None:
+            bx, by, bw, bh = globals()["mirror_rect"]
             if bx <= x <= bx + bw and by <= y <= by + bh:
                 flip_top_half = not flip_top_half
                 return
@@ -217,15 +217,26 @@ def draw_ui(
     m_bw, m_bh = 120, 40
     m_bx = display_w - m_bw - margin
     m_by = margin
-    globals()['mirror_rect'] = (m_bx, m_by, m_bw, m_bh)
+    globals()["mirror_rect"] = (m_bx, m_by, m_bw, m_bh)
     m_color = (0, 255, 0) if flip_top_half else (80, 80, 160)
     cv2.rectangle(display_frame, (m_bx, m_by), (m_bx + m_bw, m_by + m_bh), m_color, -1)
-    cv2.rectangle(display_frame, (m_bx, m_by), (m_bx + m_bw, m_by + m_bh), (255, 255, 255), 2)
+    cv2.rectangle(
+        display_frame, (m_bx, m_by), (m_bx + m_bw, m_by + m_bh), (255, 255, 255), 2
+    )
     label = "Mirror"
     text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
     tx = m_bx + (m_bw - text_size[0]) // 2
     ty = m_by + (m_bh + text_size[1]) // 2
-    cv2.putText(display_frame, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(
+        display_frame,
+        label,
+        (tx, ty),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
 
     return display_frame
 

@@ -335,7 +335,7 @@ while cap.isOpened():
                 continue
 
             # Determine if detection is in top or bottom half
-            is_top = (cy < h_half)
+            is_top = cy < h_half
 
             # Map coordinates into display_canvas depending on mode and flip flag
             mx1 = mx2 = my1 = my2 = None
@@ -396,7 +396,12 @@ while cap.isOpened():
 
             # Round and clamp
             try:
-                ix1, iy1, ix2, iy2 = int(round(mx1)), int(round(my1)), int(round(mx2)), int(round(my2))
+                ix1, iy1, ix2, iy2 = (
+                    int(round(mx1)),
+                    int(round(my1)),
+                    int(round(mx2)),
+                    int(round(my2)),
+                )
             except Exception:
                 continue
             ih, iw = annotated_frame.shape[:2]
@@ -406,10 +411,18 @@ while cap.isOpened():
             iy2 = max(0, min(iy2, ih - 1))
 
             # draw box and label
-            col_key = cls_name if cls_name is not None else (cls_id if cls_id is not None else i)
+            col_key = (
+                cls_name
+                if cls_name is not None
+                else (cls_id if cls_id is not None else i)
+            )
             color = color_from_key(col_key)
             cv2.rectangle(annotated_frame, (ix1, iy1), (ix2, iy2), color, 2)
-            label = cls_name if cls_name is not None else (str(cls_id) if cls_id is not None else "obj")
+            label = (
+                cls_name
+                if cls_name is not None
+                else (str(cls_id) if cls_id is not None else "obj")
+            )
             cv2.putText(
                 annotated_frame,
                 label,
