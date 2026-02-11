@@ -35,7 +35,33 @@ parser.add_argument(
     default="",
     help="Comma-separated class names to follow (e.g. person,car). Empty = all classes",
 )
+parser.add_argument(
+    "--resolution",
+    "-R",
+    type=str,
+    default="HD",
+    help="Resolution preset: QVGA,VGA,SVGA,XGA,HD or custom WxH like 640x480 (default: HD)",
+)
 args = parser.parse_args()
+
+# Resolution presets
+RES_PRESETS = {
+    "QVGA": (320, 240),
+    "VGA": (640, 480),
+    "SVGA": (800, 600),
+    "XGA": (1024, 768),
+    "HD": (1280, 720),
+}
+res_input = (args.resolution or "HD").upper()
+if "X" in res_input and any(ch.isdigit() for ch in res_input):
+    # allow formats like 640x480 or 640X480
+    try:
+        parts = res_input.replace("x", "X").split("X")
+        RES_W, RES_H = int(parts[0]), int(parts[1])
+    except Exception:
+        RES_W, RES_H = RES_PRESETS.get("HD")
+else:
+    RES_W, RES_H = RES_PRESETS.get(res_input, RES_PRESETS.get("HD"))
 
 FRAME_PERIOD = max(1, int(args.frame_period))
 
@@ -86,6 +112,15 @@ cap = cv2.VideoCapture(source)
 if not cap.isOpened():
     print(f"ERROR: cannot open video source: {source}")
     sys.exit(1)
+
+# If using a camera (numeric source) attempt to set resolution to the requested preset
+try:
+    if args.video_input is None:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, RES_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, RES_H)
+        print(f"Camera requested resolution: {RES_W}x{RES_H}")
+except Exception:
+    pass
 
 # trails: key -> deque of (x, y, timestamp)
 trails = defaultdict(deque)
